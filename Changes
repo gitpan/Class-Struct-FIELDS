@@ -1,0 +1,12 @@
+Revision history for Perl extension Class::Struct::FIELDS.
+
+0.7 Wed Sep 20 20:47:00 2000
+	- uploading to PAUSE.  Ready for debugging.
+
+0.2 - 0.6
+	- internal only versions
+
+0.1  Wed Sep 13 10:50:55 2000
+	- original version; created by h2xs 1.20 with options
+		-v 0.1 -n Class::Struct::FIELDS -X
+
