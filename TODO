@@ -1,0 +1,49 @@
+TODO for Perl extension Class::Struct::FIELDS.
+
+1.1
+	- Fix baseclass warnings issues (mini prolog?).
+
+	- See if can drop gratuitous 5.6 isms and backport to 5.005 or
+	  earlier.
+
+	- What about nested types?  ARRAY of HASH, etc.?  Notation
+	  might be:
+
+	    use Class::Struct::FIELDS Bob => [],
+	      { a_of_h => '@%Fred' }; # ARRAY of HASH of FRED
+
+	- What about adding TIE support?  What would the notation be?
+	  (Maybe a '+'?  As in:
+
+	    use Class::Struct::FIELDS Bob => [],
+	      { ary => '+@' };
+	    my @ary;
+	    tie @ary, 'Bob';
+
+	  Need to check that only ONE fields is tied.)
+
+	- What about non-ARRAY TIE support?
+
+	- What about package-level fields?  (Class members v. instance
+	  members)
+
+	- Support class members and accessors (notation?).  And
+	  mixture, too:
+
+	    sub new_request {
+	      if (UNIVERSAL::isa ($_[0], __PACKAGE__)) { # object method
+	        my CQoDP $self = shift;
+	        $self->request->new (@_);
+	      }
+
+	      else { # class method
+	        CQoDP::Request::->new (@_);
+	      }
+	    }
+
+	- Use of hidden members for user overrides should be a flag
+	  for &import; consider using Pragmatic.
+
+# Local Variables:
+# mode: auto-fill
+# End:

@@ -26,45 +26,57 @@ our %EXPORT_TAGS = (all => [qw(struct)]);
 our @EXPORT_OK = (@{$EXPORT_TAGS{all}});
 our @EXPORT = qw(struct);
 
-# I'd like to say "our $VERSION = v0.9;", but MakeMaker--even in perl
+# I'd like to say "our $VERSION = v1.0;", but MakeMaker--even in perl
 # 5.6.0--, doesn't grok that and has trouble creating a Makefile.
-our $VERSION = '0.9';
-my $rcs = qq$Id: FIELDS.pm,v 1.6 2000/09/25 01:22:51 binkley Exp $;
+our $VERSION = '1.0';
+my $rcs = qq$Id: FIELDS.pm,v 1.9 2000/10/04 12:32:04 binkley Exp $;
 
-sub _array ($$);
-sub _arrayref ($$);
-sub _code ($$);
-sub _coderef ($$);
+my %SEEN_PKGS = ();
+
+sub struct;
+sub _array ($$;$);
+sub _arraytie ($$);
+sub _arrayref ($$;$);
+sub _code ($$;$);
+sub _coderef ($$;$);
 sub _baseclass_warning ($$);
-sub _hash ($$);
-sub _hashref ($$);
+sub _get_isa ($$);
+sub _hash ($$;$);
+sub _hashref ($$;$);
+sub _mini_prolog ($$);
 sub _new_new_warning ($);
-sub _object ($$$$);
-sub _objectref ($$$$);
+sub _object ($$$$;$);
+sub _object_array ($$$$;$);
+sub _object_hash ($$$$;$);
+sub _objectref ($$$$;$);
 sub _override_warning ($$);
 sub _postlog ( );
 sub _prolog ($$$);
-sub _regexp ($$);
-sub _regexpref ($$);
-sub _scalar ($$);
-sub _scalarref ($$);
+sub _regexp ($$;$);
+sub _regexpref ($$;$);
+sub _scalar ($$;$);
+sub _scalarref ($$;$);
 sub _usage_error;
 
 sub import {
   my ($class) = shift;
 
-  struct (@_) if @_;
-  $class->export_to_level (1); # we consume @_
+  # We consume all of @_, so don't pass it along.
+  $class->export_to_level (1);
+
+  # Consume our own frame so that &struct thinks our caller is the
+  # real caller.
+  goto &struct if @_;
 }
 
 sub struct {
   my ($class, $isa, $decls);
-  my $caller = (caller ( ))[0];
+  my $caller = caller;
 
   if (my $ref = ref $_[0]) { # guess class from caller
     if ($ref eq 'ARRAY') {
       if ($ref = ref $_[1]) {
-	if ($ref eq 'HASH') { # called as "struct [], {}"
+	if ($ref eq 'HASH') { # called as "{LIST}, [LIST]"
 	  ($class, $isa, $decls) = ($caller, shift, shift);
 	  _usage_error if @_;
 	}
@@ -74,12 +86,12 @@ sub struct {
 	}
       }
 
-      else { # called as "struct [], ..."
+      else { # called as "[LIST], LIST"
 	($class, $isa, $decls) = ($caller, shift, {@_});
       }
     }
 
-    elsif ($ref eq 'HASH') { # called as "struct ..."
+    elsif ($ref eq 'HASH') { # called as "{LIST}"
       ($class, $isa, $decls) = ($caller, [], shift);
       _usage_error if @_;
     }
@@ -89,11 +101,11 @@ sub struct {
     }
   }
 
-  else { # caller listed, e.g., Some_Class => ...
+  else { # caller listed
     if ($ref = ref $_[1]) {
       if ($ref eq 'ARRAY') {
 	if ($ref = ref $_[2]) {
-	  if ($ref eq 'HASH') { # called as "struct Class => [], {}"
+	  if ($ref eq 'HASH') { # called as "[LIST], {LIST}"
 	    ($class, $isa, $decls) = (shift, shift, shift);
 	    _usage_error if @_;
 	  }
@@ -103,12 +115,12 @@ sub struct {
 	  }
 	}
 
-	else { # called as "struct Class => [], ..."
+	else { # called as "[LIST], LIST"
 	  ($class, $isa, $decls) = (shift, shift, {@_});
 	}
       }
 
-      elsif ($ref eq 'HASH') { # called as "struct {}"
+      elsif ($ref eq 'HASH') { # called as "CLASS, {LIST}"
 	($class, $isa, $decls) = (shift, [], shift);
 	_usage_error if @_;
       }
@@ -119,19 +131,28 @@ sub struct {
     }
 
     else {
-      if (@_) { # called as "struct 'Class'"; ambiguous!
-	($class, $isa, $decls) = (shift, [], {@_});
+      if (@_) {
+	if (@_ % 2) { # called as "LIST" with CLASS
+	  ($class, $isa, $decls) = (shift, [], {@_});
+	}
+
+	else { # called as "LIST" without CLASS
+	  ($class, $isa, $decls) = ($caller, [], {});
+	}
       }
 
       else { # called as plain "&struct"
-	($class, $isa, $decls) = ($caller, [], {@_});
+	($class, $isa, $decls) = ($caller, [], {});
       }
     }
   }
 
+  eval _mini_prolog ($class, $isa); # baseclass warnings
   my $eval = _prolog ($class, $isa, $decls);
 
   while (my ($k, $v) = each %$decls) {
+    my $hidden = undef;
+
     # Don't make subroutines for "private" keys; you should access
     # them directly: $self->{_blah_blah};  See fields.
     next if $k =~ /^_/o;
@@ -141,60 +162,93 @@ sub struct {
     # 1. Caller has already defined an accessor.
     #
     # 2. Base class has a same-named method.
+    #
+    # 3. Take care to use exists instead of defined so that caller can
+    #    use sub declarations before actually defining the access
+    #    method.
 
-    if (do { no strict qw(refs); defined &{"$class\::$k"} }) {
+    if (do { no strict qw(refs); exists &{"$class\::$k"} }) {
       _override_warning ($class, $k);
-      next;
+      $hidden = 1;
+      # next;
     }
 
-    _baseclass_warning ($class, $k) if $class->can ($k);
+    # This doesn't work?  XXX
+    _baseclass_warning ($class, $k) if UNIVERSAL::can ($class, $k);
 
     if ($v eq '$') {
-      $eval .= _scalar ($class, $k);
+      $eval .= _scalar ($class, $k, $hidden);
     }
 
     elsif ($v eq '\$' or $v eq '*$') {
-      $eval .= _scalarref ($class, $k);
+      $eval .= _scalarref ($class, $k, $hidden);
     }
 
     elsif ($v eq '@') {
-      $eval .= _array ($class, $k);
+      $eval .= _array ($class, $k, $hidden);
+    }
+
+    # EXPERIMENTAL  XXX
+    elsif ($v eq '+@') {
+      $eval .= _arraytie ($class, $k);
+      $eval .= _array ($class, $k, $hidden);
     }
 
     elsif ($v eq '\@' or $v eq '*@') {
-      $eval .= _arrayref ($class, $k);
+      $eval .= _arrayref ($class, $k, $hidden);
     }
 
     elsif ($v eq '%') {
-      $eval .= _hash ($class, $k);
+      $eval .= _hash ($class, $k, $hidden);
     }
 
     elsif ($v eq '\%' or $v eq '*%') {
-      $eval .= _hashref ($class, $k);
+      $eval .= _hashref ($class, $k, $hidden);
     }
 
     elsif ($v eq '&') {
-      $eval .= _code ($class, $k);
+      $eval .= _code ($class, $k, $hidden);
     }
 
     elsif ($v eq '\&' or $v eq '*&') {
-      $eval .= _coderef ($class, $k);
+      $eval .= _coderef ($class, $k, $hidden);
     }
 
     elsif ($v eq '/') {
-      $eval .= _regexp ($class, $k);
+      $eval .= _regexp ($class, $k, $hidden);
     }
 
     elsif ($v eq '\/' or $v eq '*/') {
-      $eval .= _regexpref ($class, $k);
+      $eval .= _regexpref ($class, $k, $hidden);
+    }
+
+    # EXPERIMENTAL  XXX
+    elsif ($v =~ s/^\+@(\w+(?:::\w+)*)$/$1/o) {
+      $SEEN_PKGS{$class}->{$k} = $v;
+      $eval .= _arraytie ($class, $k);
+      $eval .= _object_array ($class, $caller, $k, $v, $hidden);
+    }
+
+    # EXPERIMENTAL  XXX
+    elsif ($v =~ s/^@(\w+(?:::\w+)*)$/$1/o) {
+      $SEEN_PKGS{$class}->{$k} = $v;
+      $eval .= _object_array ($class, $caller, $k, $v, $hidden);
+    }
+
+    # EXPERIMENTAL  XXX
+    elsif ($v =~ s/^%(\w+(?:::\w+)*)$/$1/o) {
+      $SEEN_PKGS{$class}->{$k} = $v;
+      $eval .= _object_hash ($class, $caller, $k, $v, $hidden);
     }
 
     elsif ($v =~ s/^[\\*](\w+(?:::\w+)*)$/$1/o) {
-      $eval .= _objectref ($class, $caller, $k, $v);
+      $SEEN_PKGS{$class}->{$k} = $v;
+      $eval .= _objectref ($class, $caller, $k, $v, $hidden);
     }
 
     elsif ($v =~ /^\w+(?:::\w+)*$/o) {
-      $eval .= _object ($class, $caller, $k, $v);
+      $SEEN_PKGS{$class}->{$k} = $v;
+      $eval .= _object ($class, $caller, $k, $v, $hidden);
     }
 
     else {
@@ -210,9 +264,40 @@ sub struct {
   $class;
 }
 
-sub _prolog ($$$) {
-  my ($class, $isa, $decls) = @_;
-  my (@isa, @fields);
+# Work around a broken UNIVERSAL::isa in 5.6.0:
+if ($^V eq v5.6.0) {
+  no warnings;
+
+  # sub UNIVERSAL::isa {
+  sub isa {
+    my ($class, $super) = @_;
+    $class = ref $class || $class;
+    return 1 if $class eq $super; # trivial case
+
+    my $f = sub {
+      no strict qw(refs);
+
+      my ($class, $super, $g) = @_;
+      my @supers = @{"$class\::ISA"};
+
+      foreach my $s (@supers) {
+	return 1 if $s eq $super;
+	# Does Perl optimizer understand tail recursion?
+	return $g->($s, $super, $g);
+      }
+
+      return '';
+    };
+
+    return $f->($class, $super, $f);
+  }
+
+  *UNIVERSAL::isa = \&isa;
+}
+
+sub _get_isa ($$) {
+  my ($class, $isa) = @_;
+  my @isa;
 
   {
     no strict qw(refs);
@@ -220,7 +305,25 @@ sub _prolog ($$$) {
     @isa = (@{"$class\::ISA"}, @$isa); # preserve the existing @ISA
   }
 
-  @fields = keys %$decls;
+  return @isa;
+}
+
+sub _mini_prolog ($$) {
+  my ($class, $isa) = @_;
+  my @isa = _get_isa ($class, $isa);
+
+  <<EOC;
+{
+  package $class;
+  use base qw(@isa);
+}
+EOC
+}
+
+sub _prolog ($$$) {
+  my ($class, $isa, $decls) = @_;
+  my @isa = _get_isa ($class, $isa);
+  my @fields = keys %$decls;
 
   <<EOC;
 {
@@ -237,7 +340,7 @@ sub _prolog ($$$) {
 
   # Allow user to provide their own new as long as they return
   # \$self->_init (\@_);
-  unless (do { no strict qw(refs); defined &{$class\::new} }) {
+  unless (do { no strict qw(refs); exists &{$class\::new} }) {
     *{$class\::new} = sub {
       my \$this = shift;
       my \$class = ref \$this || \$this || __PACKAGE__;
@@ -311,31 +414,32 @@ EOE
 
 sub _baseclass_warning ($$) {
   warnings::warn <<EOE if warnings::enabled ( );
-Accessor '$_[1]' defined in package '$_[0]' hides method in base class
+Accessor '$_[1]' exists in package '$_[0]' hides method in base class
 EOE
 }
 
 sub _override_warning ($$) {
   warnings::warn <<EOE if warnings::enabled ( );
-Method '$_[1]' defined in package '$_[0]' overrides accessor
+Method '$_[1]' exists in package '$_[0]' overrides accessor
 EOE
 }
 
 sub _new_new_warning ($) {
   warnings::warn <<EOE if warnings::enabled ( );
-Method 'new' already defined in package '$_[0]'
+Method 'new' already exists in package '$_[0]'
 EOE
 }
 
 # Until lvalue subs work right under the debugger, fall back on old
 # get/set syntax.
 
-sub _scalar ($$) {
-  my ($class, $k) = @_;
+sub _scalar ($$;$) {
+  my ($class, $k, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
 
   <<EOC;
 
-  sub $k (\$;\$) {
+  sub $sub (\$;\$) {
     my $class \$self = \$_[0];
 
     \@_ == 2 ? \$self->{$k} = \$_[1] : \$self->{$k};
@@ -343,12 +447,13 @@ sub _scalar ($$) {
 EOC
 }
 
-sub _scalarref ($$) {
-  my ($class, $k) = @_;
+sub _scalarref ($$;$) {
+  my ($class, $k, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
 
   <<EOC;
 
-  sub $k (\$;\$) {
+  sub $sub (\$;\$) {
     my $class \$self = \$_[0];
 
     \\(\@_ == 2 ? \$self->{$k} = \$_[1] : \$self->{$k});
@@ -356,12 +461,13 @@ sub _scalarref ($$) {
 EOC
 }
 
-sub _array ($$) {
-  my ($class, $k) = @_;
+sub _array ($$;$) {
+  my ($class, $k, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
 
   <<EOC;
 
-  sub $k (\$;\$\$) {
+  sub $sub (\$;\$\$) {
     my $class \$self = \$_[0];
 
     if (\@_ == 3) {
@@ -370,7 +476,7 @@ sub _array ($$) {
 
     elsif (\@_ == 2) {
       if (my \$ref = ref \$_[1]) {
-        croak "Initializer for '$k' must be array reference"
+        croak "Initializer for '$k' must be ARRAY reference"
           if \$ref ne 'ARRAY';
         \$self->{$k} = \$_[1];
       }
@@ -387,12 +493,58 @@ sub _array ($$) {
 EOC
 }
 
-sub _arrayref ($$) {
+sub _arraytie ($$) {
   my ($class, $k) = @_;
 
   <<EOC;
 
-  sub $k (\$;\$\$) {
+  use base qw(Tie::Array);
+
+  sub TIEARRAY
+  {
+    (shift)->new (\@_);
+  }
+
+  sub FETCH
+  {
+    my $class \$self = \$_[0];
+    \$self->$k \(\$_[1]);
+  }
+
+  sub FETCHSIZE {
+    my $class \$self = \$_[0];
+    scalar \@{\$self->$k};
+  }
+
+  sub STORE {
+    my $class \$self = \$_[0];
+    \$self->$k \(\$_[1], \$_[2]);
+  }
+
+  sub STORESIZE {
+    my $class \$self = \$_[0];
+    \$#{\$self->$k} = \$_[1] - 1;
+  }
+
+  sub EXISTS {
+    my $class \$self = \$_[0];
+    exists \$self->$k\->[\$_[1]];
+  }
+
+  sub DELETE {
+    my $class \$self = \$_[0];
+    delete \$self->$k\->[\$_[1]];
+  }
+EOC
+}
+
+sub _arrayref ($$;$) {
+  my ($class, $k, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
+
+  <<EOC;
+
+  sub $sub (\$;\$\$) {
     my $class \$self = \$_[0];
 
     if (\@_ == 3) {
@@ -401,7 +553,7 @@ sub _arrayref ($$) {
 
     elsif (\@_ == 2) {
       if (my \$ref = ref \$_[1]) {
-        croak "Initializer for '$k' must be array reference"
+        croak "Initializer for '$k' must be ARRAY reference"
           if \$ref ne 'ARRAY';
         \\(\$self->{$k} = \$_[1]);
       }
@@ -418,12 +570,13 @@ sub _arrayref ($$) {
 EOC
 }
 
-sub _hash ($$) {
-  my ($class, $k) = @_;
+sub _hash ($$;$) {
+  my ($class, $k, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
 
   <<EOC;
 
-  sub $k (\$;\$\$) {
+  sub $sub (\$;\$\$) {
     my $class \$self = \$_[0];
 
     if (\@_ == 3) {
@@ -432,7 +585,7 @@ sub _hash ($$) {
 
     elsif (\@_ == 2) {
       if (my \$ref = ref \$_[1]) {
-        croak "Initializer for '$k' must be hash reference"
+        croak "Initializer for '$k' must be HASH reference"
           if \$ref ne 'HASH';
         \$self->{$k} = \$_[1];
       }
@@ -449,12 +602,13 @@ sub _hash ($$) {
 EOC
 }
 
-sub _hashref ($$) {
-  my ($class, $k) = @_;
+sub _hashref ($$;$) {
+  my ($class, $k, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
 
   <<EOC;
 
-  sub $k (\$;\$\$) {
+  sub $sub (\$;\$\$) {
     my $class \$self = \$_[0];
 
     if (\@_ == 3) {
@@ -463,7 +617,7 @@ sub _hashref ($$) {
 
     elsif (\@_ == 2) {
       if (my \$ref = ref \$_[1]) {
-        croak "Initializer for '$k' must be hash reference"
+        croak "Initializer for '$k' must be HASH reference"
           if \$ref ne 'HASH';
         \\(\$self->{$k} = \$_[1]);
       }
@@ -480,12 +634,13 @@ sub _hashref ($$) {
 EOC
 }
 
-sub _code ($$) {
-  my ($class, $k) = @_;
+sub _code ($$;$) {
+  my ($class, $k, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
 
   <<EOC;
 
-  sub $k (\$;\$) {
+  sub $sub (\$;\$) {
     my $class \$self = \$_[0];
 
     if (\@_ == 2) {
@@ -501,12 +656,13 @@ sub _code ($$) {
 EOC
 }
 
-sub _coderef ($$) {
-  my ($class, $k) = @_;
+sub _coderef ($$;$) {
+  my ($class, $k, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
 
   <<EOC;
 
-  sub $k (\$;\$) {
+  sub $sub (\$;\$) {
     my $class \$self = \$_[0];
 
     if (\@_ == 2) {
@@ -522,16 +678,17 @@ sub _coderef ($$) {
 EOC
 }
 
-sub _regexp ($$) {
-  my ($class, $k) = @_;
+sub _regexp ($$;$) {
+  my ($class, $k, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
 
   <<EOC;
 
-  sub $k (\$;\$) {
+  sub $sub (\$;\$) {
     my $class \$self = \$_[0];
 
     if (\@_ == 2) {
-      croak 'Initializer for $k must be regular expression'
+      croak "Initializer for '$k' must be regular expression"
         if defined (\$_[1]) && ref (\$_[1]) ne 'Regexp';
       \$self->{$k} = \$_[1];
     }
@@ -543,16 +700,17 @@ sub _regexp ($$) {
 EOC
 }
 
-sub _regexpref ($$) {
-  my ($class, $k) = @_;
+sub _regexpref ($$;$) {
+  my ($class, $k, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
 
   <<EOC;
 
-  sub $k (\$;\$) {
+  sub $sub (\$;\$) {
     my $class \$self = \$_[0];
 
     if (\@_ == 2) {
-      croak 'Initializer for $k must be regular expression'
+      croak "Initializer for '$k' must be regular expression"
         if defined (\$_[1]) && ref (\$_[1]) ne 'Regexp';
       \\(\$self->{$k} = \$_[1]);
     }
@@ -564,8 +722,9 @@ sub _regexpref ($$) {
 EOC
 }
 
-sub _object ($$$$) {
-  my ($class, $caller, $k, $v) = @_;
+sub _object ($$$$;$) {
+  my ($class, $caller, $k, $v, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
 
   # In caller's package:
   # From base.pm:
@@ -582,12 +741,12 @@ sub _object ($$$$) {
   # fatal errors (syntax etc) must be reported.
   die if \$@ && \$@ !~ /^Can't locate .*? at \\(eval /;
 
-  sub $k (\$;\$) {
+  sub $sub (\$;\$) {
     my $class \$self = \$_[0];
 
     if (\@_ == 2) {
-      croak '$k argument is wrong class'
-        if defined (\$_[1]) && ! UNIVERSAL::isa (\$_[1], '$v');
+      croak "Initializer for '$k' must be $v object"
+        if (defined \$_[1] and not UNIVERSAL::isa (\$_[1], '$v'));
       \$self->{$k} = \$_[1];
     }
 
@@ -598,8 +757,9 @@ sub _object ($$$$) {
 EOC
 }
 
-sub _objectref ($$$$) {
-  my ($class, $caller, $k, $v) = @_;
+sub _object_array ($$$$;$) {
+  my ($class, $caller, $k, $v, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
 
   # In caller's package:
   # From base.pm:
@@ -616,12 +776,106 @@ sub _objectref ($$$$) {
   # fatal errors (syntax etc) must be reported.
   die if \$@ && \$@ !~ /^Can't locate .*? at \\(eval /;
 
-  sub $k (\$;\$) {
+  sub $sub (\$;\$\$) {
+    my $class \$self = \$_[0];
+
+    if (\@_ == 3) {
+      croak "Initializer for '$k' must be $v"
+        if not UNIVERSAL::isa (\$_[2], '$v');
+      \$self->{$k}->[\$_[1]] = \$_[2];
+    }
+
+    elsif (\@_ == 2) {
+      if (my \$ref = ref \$_[1]) {
+        croak "Initializer for '$k' must be ARRAY reference"
+          if not UNIVERSAL::isa (\$_[2], 'ARRAY');
+        \$self->{$k} = \$_[1];
+      }
+
+      else {
+        \$self->{$k}->[\$_[1]] ||= $v\::->new;
+      }
+    }
+
+    else {
+      \$self->{$k} ||= [];
+    }
+  }
+EOC
+}
+
+sub _object_hash ($$$$;$) {
+  my ($class, $caller, $k, $v, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
+
+  # In caller's package:
+  # From base.pm:
+  eval "package $caller; require $v";
+  # Only ignore "Can't locate" errors from our eval require.  Other
+  # fatal errors (syntax etc) must be reported.
+  die if $@ && $@ !~ /^Can't locate .*? at \(eval /;
+
+  <<EOC;
+
+  # From base.pm:
+  eval "require $v";
+  # Only ignore "Can't locate" errors from our eval require.  Other
+  # fatal errors (syntax etc) must be reported.
+  die if \$@ && \$@ !~ /^Can't locate .*? at \\(eval /;
+
+  sub $sub (\$;\$\$) {
+    my $class \$self = \$_[0];
+
+    if (\@_ == 3) {
+      croak "Initializer for '$k' must be $v"
+        if not UNIVERSAL::isa (\$_[2], '$v');
+      \$self->{$k}->{\$_[1]} = \$_[2];
+    }
+
+    elsif (\@_ == 2) {
+      if (my \$ref = ref \$_[1]) {
+        croak "Initializer for '$k' must be HASH reference"
+          if not UNIVERSAL::isa (\$_[2], 'HASH');
+        \$self->{$k} = \$_[1];
+      }
+
+      else {
+        \$self->{$k}->{\$_[1]} ||= $v\::->new;
+      }
+    }
+
+    else {
+      \$self->{$k} ||= {};
+    }
+  }
+EOC
+}
+
+sub _objectref ($$$$;$) {
+  my ($class, $caller, $k, $v, $hidden) = @_;
+  my $sub = $hidden ? "__$k" : $k;
+
+  # In caller's package:
+  # From base.pm:
+  eval "package $caller; require $v";
+  # Only ignore "Can't locate" errors from our eval require.  Other
+  # fatal errors (syntax etc) must be reported.
+  die if $@ && $@ !~ /^Can't locate .*? at \(eval /;
+
+  <<EOC;
+
+  # From base.pm:
+  eval "require $v";
+  # Only ignore "Can't locate" errors from our eval require.  Other
+  # fatal errors (syntax etc) must be reported.
+  die if \$@ && \$@ !~ /^Can't locate .*? at \\(eval /;
+
+  sub $sub (\$;\$) {
     my $class \$self = \$_[0];
 
     if (\@_ == 2) {
-      croak '$k argument is wrong class'
-        if defined (\$_[1]) && ! UNIVERSAL::isa (\$_[1], '$v');
+      croak "Initializer for '$k' must be $v object"
+        if (defined \$_[1] and not UNIVERSAL::isa (\$_[1], '$v'));
       \\(\$self->{$k} = \$_[1]);
     }
 
@@ -641,6 +895,8 @@ __END__
 Class::Struct::FIELDS - Combine Class::Struct, base and fields
 
 =head1 SYNOPSIS
+
+(This page documents C<Class::Struct::FIELDS> v.1.0.)
 
     use Class::Struct::FIELDS;
             # declare struct, based on fields, explicit class name:
@@ -705,8 +961,6 @@ Class::Struct::FIELDS - Combine Class::Struct, base and fields
 
 =head1 DESCRIPTION
 
-(This page documents C<Class::Struct::FIELDS> v.0.9.)
-
 C<Class::Struct::FIELDS> exports a single function, C<struct>.  Given
 a list of element names and types, and optionally a class name and/or
 an array reference of base classes, C<struct> creates a Perl 5 class
@@ -722,15 +976,17 @@ same name in the package.  (See Example 2.)
 
 Each element's type can be scalar, array, hash, code or class.
 
-=head2 Differences from C<Class::Struct> and C<fields>
+=head2 Differences from C<Class::Struct> C<base> and C<fields>
 
 C<Class::Struct::FIELDS> is a combination of C<Class::Struct>, C<base>
 and C<fields>.
 
-Unlike C<Class::Struct>, inheritance is explicitly supported.  One
-result is that you may no longer use the array (C<[]>) notation for
-indicating internal representation.  Also, C<Class::Struct::FIELDS>
-relies on C<fields> for internal representation.
+Unlike C<Class::Struct>, inheritance is explicitly supported, and
+there is better support for user overrides of constructed accessor
+methods.  One result is that you may no longer use the array (C<[]>)
+notation for indicating internal representation.  Also,
+C<Class::Struct::FIELDS> relies on C<fields> for internal
+representation.
 
 Also, C<Class::Struct::FIELDS> supports code and regular expression
 elements.  (C<Class::Struct> handles code and regular expressions as
@@ -782,20 +1038,17 @@ statement.  A more interesting example is:
 
 =head2 The C<struct> subroutine
 
-The C<struct> subroutine has two correct forms of parameter-list:
+The C<struct> subroutine has three forms of parameter-list:
 
     struct (CLASS_NAME => { ELEMENT_LIST });
+    struct (CLASS_NAME, ELEMENT_LIST);
     struct (ELEMENT_LIST);
 
 The first form explicitly identifies the name of the class being
-created.  The second form assumes the current package name as the
-class name.  There is a third form of parameter-list:
-
-    struct (CLASS_NAME, ELEMENT_LIST);
-
-but it is ambiguous and could be resolved as the second form above
-with an illegal, odd element at the end.  The code presently supports
-this call, but it may be unsupported in the future.
+created.  The second form is equivalent.  The second form assumes the
+current package name as the class name.  The second and third forms
+are distinguished by the parity of the argument list: an odd number of
+arguments is taken to be of the second form.
 
 Optionally, you may specify base classes with an array reference as
 the first non-class-name argument:
@@ -812,17 +1065,16 @@ list or a hash reference with this form.)
 The class created by C<struct> may be either a subclass or superclass
 of other classes.  See L<base> and L<fields> for details.
 
-A function named C<new> must not be explicitly defined in a class
-created by C<struct>.
-
 The I<ELEMENT_LIST> has the form
 
     NAME => TYPE, ...
 
 Each name-type pair declares one element of the struct. Each element
-name will be defined as an accessor method unless a method by that
-name is explicitly defined; in the latter case, a warning is issued if
-the warning flag (B<-w>) is set.  XXX
+name will be usually be defined as an accessor method of the same name
+as the field, unless a method by that name is explicitly defined
+(called a "user override") by the caller prior to the C<use> statement
+for C<Class::Struct::FIELDS>.  (See L</Replacing member access methods
+with user overrides>.)
 
 C<struct> returns the name of the newly-constructed package.
 
@@ -970,11 +1222,11 @@ contents of that hash are passed to the element's own constructor.
 C<new> tries to be as clever as possible in deducing what type of
 object to construct.  All of these are valid:
 
-  { package Bob; use Class::Struct::FIELDS; struct }
-  my Bob $b = Bob::->new; # good style
-  my Bob $b2 = $b->new; # works fine
-  my Bob $b3 = &Bob::new; # if you insist
-  my Bob $b4 = Bob::new (apple => 3, banana => 'four'); # WRONG!
+    use Class::Struct::FIELDS qw(Bob);
+    my Bob $b = Bob::->new; # good style
+    my Bob $b2 = $b->new; # works fine
+    my Bob $b3 = &Bob::new; # if you insist
+    my Bob $b4 = Bob::new (apple => 3, banana => 'four'); # WRONG!
 
 The last case doesn't behave as hoped for: C<new> tries to construct
 an object of package C<apple> (and hopefully fails, unless you
@@ -1011,6 +1263,75 @@ may construct an object before descendents.
 
 There is no corresponding facility for DESTROY.  XXX
 
+=head2 Replacing member access methods with user overrides
+
+You might want to create custom access methods, or user overrides.
+The most straight forward way to do this and still retain C<string>
+and C<warnings> is:
+
+    use strict;
+    use warnings;
+
+    sub Bob::ff ($;$$); # declare sub so Class::Struct::FIELDS can see
+
+    use Class::Struct::FIELDS Bob => { ff => '$' };
+
+    sub Bob::ff ($;$$) {
+      my Bob $self = shift;
+
+      &some_other_sub (@_);
+    }
+
+If you do not declare the user override prior to the C<use> statement,
+a warning is issued if the warning flag (B<-w>) is set.
+
+Notice that we changed the default sub signature for I<ff> from
+C<($;$)> to C<($;$$)>.  Normally, this might generate a warning if we
+redefine the sub, but declaring the sub ahead of time keeps C<strict>
+and C<warnings> happy.  You might prefer this construction:
+
+    { package Bob; }
+
+    sub Bob::ff ($;$$) {
+      my Bob $self = shift;
+
+      &some_other_sub (@_);
+    }
+
+    use Class::Struct::FIELDS Bob => { ff => '$' };
+
+You might still want the advantages of the the constructed accessor
+methods, even with user overrides (for example, checking that an
+assigned value is the right type or package). C<Class::Struct::FIELDS>
+constructs the accessor with a special name, so that you may use it
+yourself in the user override.  That special name is the regular field
+name prepended by a double underscore, C<__>.  You can access these
+so:
+
+    use strict;
+    use warnings;
+
+    sub Bob::ff ($;$); # declare sub so Class::Struct::FIELDS can see
+    sub Bob::gg ($;$); # declare sub so Class::Struct::FIELDS can see
+
+    use Class::Struct::FIELDS Bob => { ff => '$', gg => '$' };
+
+    # This example is identical to having no user override.
+    sub Bob::ff ($;$) {
+      my Bob $self = shift;
+      $self->__ff (@_);
+    }
+
+    # This example illustrates a workaround for v5.6.0.
+    sub Bob::gg ($;$) {
+      # This silliness is due to a bug in 5.6.0: it thinks you can't
+      # fiddle with @_ if you've given it a prototype.  XXX
+      my @args = @_;
+      $args[1] *= 2 if @args == 2 and defined $args[1];
+      @_ = @args;
+      goto &Bob::__gg;
+    }
+
 =head2 Private fields
 
 Fields starting with a leading underscore, C<_>, are private: they are
@@ -1018,8 +1339,8 @@ still valid fields, but C<Class::Struct::FIELDS> does not create
 subroutines to access them.  Instead, you should access them the usual
 way for hash members:
 
-  $self->{_private_key}; # ok
-  $self->_private_key; # Compilation error
+    $self->{_private_key}; # ok
+    $self->_private_key; # Compilation error
 
 See L<fields> for more details.
 
@@ -1135,12 +1456,11 @@ struct's constructor.
 C<Class::Struct::FIELDS> has a very elegant idiom for creating
 inheritance trees:
 
-    use Class::Struct::FIELDS;
-    struct Fred => [];
-    struct Barney => [qw(Fred)];
-    struct Wilma => [qw(Barney)],
-      aa => '@',
-      bb => 'IO::Scalar';
+    use Class::Struct::FIELDS Fred => [];
+    use Class::Struct::FIELDS Barney => [qw(Fred)];
+    use Class::Struct::FIELDS Wilma => [qw(Barney)],
+      { aa => '@',
+        bb => 'IO::Scalar' };
 
 That's all the code it takes!
 
@@ -1148,7 +1468,8 @@ That's all the code it takes!
 
 =head1 EXPORTS
 
-C<struct>
+C<Class::Struct::FIELDS> export C<struct> for backwards-compatibility
+with C<Class::Struct>.
 
 =head1 DIAGNOSTICS
 
@@ -1163,19 +1484,19 @@ Items marked "(W)" are non-fatal (invoke C<Carp::carp>); those marked
 (F) The caller failed to read the documentation for
 C<Class::Struct::FIELDS> and follow the advice therein.
 
-=item Accessor '%s' defined in package '%s' hides method in base class
+=item Accessor '%s' exists in package '%s' hides method in base class
 
 (W) There is already a subroutine, with the name of one of the
 accessors, located in a base class of the given package.  You should
 consider renaming the field with the given name.
 
-=item Method '%s' defined in package '%s' overrides accessor
+=item Method '%s' exists in package '%s' overrides accessor
 
 (W) There is already a subroutine, with the name of one of the
 accessors, located in the given package.  You may have intended this,
 however, if defining your own custom accessors.
 
-=item Method 'new' already defined in package '%s'
+=item Method 'new' already exists in package '%s'
 
 (W) There is already a 'new' subroutine located in the given package.
 As long as the caveats for defining your own C<new> are followed, this
@@ -1187,19 +1508,31 @@ initialized.
 (F) At runtime, the caller tried to assign the wrong type of argument
 to the element.  An example which triggers this message:
 
-    use Class::Struct::FIELDS Bob => { a => '@' };
+    use Class::Struct::FIELDS Bob => { ary => '@' };
     my $b = Bob::->new;
     $b->ary ({hash => 'reference'}); # croaks
 
 The last statement will croak with the message, "Initializer for 'ary'
-must be array reference".
+must be ARRAY reference".
+
+=item Initializer for '%s' must be %s object
+
+(F) At runtime, the caller tried to assign the wrong class of argument
+to the element.  An example which triggers this message:
+
+    use Class::Struct::FIELDS Bob => { mary => 'Mary' };
+    use Class::Struct::FIELDS qw(Fred); # NOT inherit from Mary
+    my $b = Bob::->new;
+    $b->ary (Fred::->new); # croaks
+
+The last statement will croak with the message, "Initializer for 'aa'
+must be Mary object".
 
 =back
 
 =head1 BUGS AND CAVEATS
 
-B<NB> -- Talk about this superceding C<Class::Class>.  Or explicitly
-rename this package.
+Please see the F<TODO> list.
 
 =head1 CREDITS
 
@@ -1221,12 +1554,13 @@ under the same terms as Perl itself.
 =item L<Class::Contract>
 
 C<Class::Contract> is an extension module by Damian Conway for writing
-in a design-by-contract object-oriented style.
+in a design-by-contract object-oriented style.  It has many of the
+features of C<Class::Struct::FIELDS>, and many more besides.
 
 =item L<Class::Struct>
 
-C<Class::Struct> is a standard module for creating simple,
-non-inherited data structures.
+C<Class::Struct> is a standard module for creating simple, uninherited
+data structures.
 
 =item L<base>
 
