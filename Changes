@@ -1,5 +1,14 @@
 Revision history for Perl extension Class::Struct::FIELDS.
 
+0.9 Sun Sep 24 11:15:26 2000
+	- Fixed member constructor for \Class case.
+	- Test.pl now tests all member cases.
+	- Fixed some cases where not returning a reference after
+	  assignment to a member.
+	- Fixed several bad diagnostics.
+	- Fixed several doc bugs and missing diagnostics.
+	- Fixed warnings enable/disable.
+
 0.8 Thu Sep 21 08:58:13 2000
 	- Fixed argument checking bug in 'struct'.  Updated
 	  documentation to reflect the change.

@@ -1,5 +1,5 @@
 NAME
-    Class::Struct::FIELDS - Combine Class::Struct and fields
+    Class::Struct::FIELDS - Combine Class::Struct, base and fields
 
 SYNOPSIS
 	use Class::Struct::FIELDS;
@@ -64,6 +64,8 @@ SYNOPSIS
 	$obj->c (My_Other_Class::->new);     # assign a new object
 
 DESCRIPTION
+    (This page documents 'Class::Struct::FIELDS' v.0.9.)
+
     'Class::Struct::FIELDS' exports a single function, 'struct'. Given a
     list of element names and types, and optionally a class name and/or an
     array reference of base classes, 'struct' creates a Perl 5 class that
@@ -93,19 +95,66 @@ DESCRIPTION
     elements. ('Class::Struct' handles code and regular expressions as
     scalars.)
 
+    Lastly, 'Class::Struct::FIELDS' passes it's import list, if any, from
+    the call to 'use Class::Struct::FIELDS ...' to 'struct' so that you may
+    create new packages at compile-time.
+
     Unlike 'fields', each element has a data type, and is automatically
     created at first access.
 
-  The 'struct()' function
+  Calling 'use Class::Struct::FIELDS'
 
-    The 'struct' function has two forms of parameter-list:
+    You may call 'use Class::Struct::FIELDS' just as with any module
+    library:
+
+	use Class::Struct::FIELDS;
+	struct Bob => [];
+
+    However, if you try 'my Dog $spot' syntax with this example:
+
+	use Class::Struct::FIELDS;
+	struct Bob => [];
+	my Bob $bob = Bob::->new;
+
+    you will get a compile-time error:
+
+	No such class Bob at <filename> line <number>, near "my Bob"
+	Bareword "Bob::" refers to nonexistent package at <filename> line
+	<number>.
+
+    since the compiler has not seen your class declarations yet until after
+    the call to 'struct', by which time it has already seen your 'my'
+    declarations. Oops, too late. Instead, create the package for 'Bob'
+    during compilation:
+
+	use Class::Struct::FIELDS qw(Bob);
+	my Bob $bob = Bob::->new;
+
+    This compiles without error as 'import' for 'Class::Struct::FIELDS'
+    calls 'struct' for you if you have any arguments in the 'use' statement.
+    A more interesting example is:
+
+	use Class::Struct::FIELDS Bob => { a => '$' };
+	use Class::Struct::FIELDS Fred => [qw(Bob)];
+	my Bob $bob = Bob::->new;
+	my Fred $fred = Fred::->new;
+
+  The 'struct' subroutine
+
+    The 'struct' subroutine has two correct forms of parameter-list:
 
 	struct (CLASS_NAME => { ELEMENT_LIST });
 	struct (ELEMENT_LIST);
 
     The first form explicitly identifies the name of the class being
     created. The second form assumes the current package name as the class
-    name.
+    name. There is a third form of parameter-list:
+
+	struct (CLASS_NAME, ELEMENT_LIST);
+
+    but it is ambiguous and could be resolved as the second form above with
+    an illegal, odd element at the end. The code presently supports this
+    call, but it may be unsupported in the future.
 
     Optionally, you may specify base classes with an array reference as the
     first non-class-name argument:
@@ -221,25 +270,30 @@ DESCRIPTION
 	The class is automatically required for you so that, for example,
 	you can safely write:
 
-	  struct MyObj {io => 'IO::Scalar'};
+	    struct MyObj {io => 'IO::Scalar'};
 
 	and access 'io' immediately. The same applies for nested structs:
 
-	  BEGIN {
-	    struct Alice { when => '$' };
-	    struct Bob { who => 'Alice' };
-	  }
+	    BEGIN {
+	      struct Alice { when => '$' };
+	      struct Bob { who => 'Alice' };
+	    }
 
-	  my Bob $b = Bob::->new;
-	  $b->who->when ('what');
+	    my Bob $b = Bob::->new;
+	    $b->who->when ('what');
 
 	Note, however, the 'BEGIN' block so that this example can use the
-	"'my Dog $spot'" syntax for 'my Bob $b'. Also, no actual import
+	'my Dog $spot' syntax for 'my Bob $b'. Also, no actual import
 	happens for the caller -- the automatic use is only for convenience
 	in auto-constructing members, not magic. Another way to do this is:
 
-	  { package Bob; use Class::Struct::FIELDS; struct }
-	  my Bob $b = Bob::->new;
+	    { package Bob; use Class::Struct::FIELDS; struct }
+	    my Bob $b = Bob::->new;
+
+	And of course the best way to do this is simply:
+
+	    use Class::Struct::FIELDS qw(Bob);
+	    my Bob $b = Bob::->new;
 
     What about globs ('*') and other funny types?
 	At present, 'Class::Struct::FIELDS' does not support special
@@ -458,6 +512,17 @@ DIAGNOSTICS
 	followed, this warning is harmless; otherwise your objects may not
 	be properly initialized.
 
+    Initializer for '%s' must be %s reference
+	(F) At runtime, the caller tried to assign the wrong type of
+	argument to the element. An example which triggers this message:
+
+	    use Class::Struct::FIELDS Bob => { a => '@' };
+	    my $b = Bob::->new;
+	    $b->ary ({hash => 'reference'}); # croaks
+
+	The last statement will croak with the message, "Initializer for
+	'ary' must be array reference".
+
 BUGS AND CAVEATS
     NB -- Talk about this superceding 'Class::Class'. Or explicitly rename
     this package.
@@ -489,3 +554,4 @@ SEE ALSO
     the fields manpage
 	'fields' is a standard module for imbuing your class with efficient
 	pseudo-hashes for data members.
+

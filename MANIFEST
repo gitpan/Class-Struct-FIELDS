@@ -2,4 +2,6 @@ Changes
 FIELDS.pm
 MANIFEST
 Makefile.PL
+README
+TODO
 test.pl

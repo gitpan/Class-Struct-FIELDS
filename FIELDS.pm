@@ -26,9 +26,10 @@ our %EXPORT_TAGS = (all => [qw(struct)]);
 our @EXPORT_OK = (@{$EXPORT_TAGS{all}});
 our @EXPORT = qw(struct);
 
-# I'd like to say "our $VERSION = v0.8;", but MakeMaker--even in perl
+# I'd like to say "our $VERSION = v0.9;", but MakeMaker--even in perl
 # 5.6.0--, doesn't grok that and has trouble creating a Makefile.
-our $VERSION = '0.8';
+our $VERSION = '0.9';
+my $rcs = qq$Id: FIELDS.pm,v 1.6 2000/09/25 01:22:51 binkley Exp $;
 
 sub _array ($$);
 sub _arrayref ($$);
@@ -131,10 +132,8 @@ sub struct {
   my $eval = _prolog ($class, $isa, $decls);
 
   while (my ($k, $v) = each %$decls) {
-    no strict qw(refs);
-
     # Don't make subroutines for "private" keys; you should access
-    # them directly: $self->{_blah_blah};
+    # them directly: $self->{_blah_blah};  See fields.
     next if $k =~ /^_/o;
 
     # Check for three cases:
@@ -143,7 +142,7 @@ sub struct {
     #
     # 2. Base class has a same-named method.
 
-    if (defined &{"$class\::$k"}) {
+    if (do { no strict qw(refs); defined &{"$class\::$k"} }) {
       _override_warning ($class, $k);
       next;
     }
@@ -190,7 +189,7 @@ sub struct {
       $eval .= _regexpref ($class, $k);
     }
 
-    elsif ($v =~ /^[\\*]\w+(?:::\w+)*$/o) {
+    elsif ($v =~ s/^[\\*](\w+(?:::\w+)*)$/$1/o) {
       $eval .= _objectref ($class, $caller, $k, $v);
     }
 
@@ -238,22 +237,18 @@ sub _prolog ($$$) {
 
   # Allow user to provide their own new as long as they return
   # \$self->_init (\@_);
-  {
-    no strict qw(refs);
+  unless (do { no strict qw(refs); defined &{$class\::new} }) {
+    *{$class\::new} = sub {
+      my \$this = shift;
+      my \$class = ref \$this || \$this || __PACKAGE__;
+      my $class \$self = fields::new (\$class);
 
-    unless (defined &{$class\::new}) {
-      *{$class\::new} = sub {
-        my \$this = shift;
-        my \$class = ref \$this || \$this || __PACKAGE__;
-        my $class \$self = fields::new (\$class);
+      \$self->_init (\@_);
+    };
+  }
 
-        \$self->_init (\@_);
-      };
-    }
-
-    else {
-      Class::Struct::FIELDS::_new_new_warning ('$class');
-    }
+  else {
+    Class::Struct::FIELDS::_new_new_warning ('$class');
   }
 
   # Two-step initialization so that user-defined init's will have the
@@ -315,19 +310,19 @@ EOE
 }
 
 sub _baseclass_warning ($$) {
-  warnings::warn <<EOE; # if warnings::enabled ( );
+  warnings::warn <<EOE if warnings::enabled ( );
 Accessor '$_[1]' defined in package '$_[0]' hides method in base class
 EOE
 }
 
 sub _override_warning ($$) {
-  warnings::warn <<EOE; # if warnings::enabled ( );
+  warnings::warn <<EOE if warnings::enabled ( );
 Method '$_[1]' defined in package '$_[0]' overrides accessor
 EOE
 }
 
 sub _new_new_warning ($) {
-  warnings::warn <<EOE; # if warnings::enabled ( );
+  warnings::warn <<EOE if warnings::enabled ( );
 Method 'new' already defined in package '$_[0]'
 EOE
 }
@@ -375,7 +370,7 @@ sub _array ($$) {
 
     elsif (\@_ == 2) {
       if (my \$ref = ref \$_[1]) {
-        croak 'Initializer for $k must be array reference'
+        croak "Initializer for '$k' must be array reference"
           if \$ref ne 'ARRAY';
         \$self->{$k} = \$_[1];
       }
@@ -406,9 +401,9 @@ sub _arrayref ($$) {
 
     elsif (\@_ == 2) {
       if (my \$ref = ref \$_[1]) {
-        croak 'Initializer for $k must be array reference'
+        croak "Initializer for '$k' must be array reference"
           if \$ref ne 'ARRAY';
-        \$self->{$k} = \$_[1];
+        \\(\$self->{$k} = \$_[1]);
       }
 
       else {
@@ -437,7 +432,7 @@ sub _hash ($$) {
 
     elsif (\@_ == 2) {
       if (my \$ref = ref \$_[1]) {
-        croak 'Initializer for $k must be array reference'
+        croak "Initializer for '$k' must be hash reference"
           if \$ref ne 'HASH';
         \$self->{$k} = \$_[1];
       }
@@ -468,9 +463,9 @@ sub _hashref ($$) {
 
     elsif (\@_ == 2) {
       if (my \$ref = ref \$_[1]) {
-        croak 'Initializer for $k must be array reference'
+        croak "Initializer for '$k' must be hash reference"
           if \$ref ne 'HASH';
-        \$self->{$k} = \$_[1];
+        \\(\$self->{$k} = \$_[1]);
       }
 
       else {
@@ -494,7 +489,7 @@ sub _code ($$) {
     my $class \$self = \$_[0];
 
     if (\@_ == 2) {
-      croak 'Initializer for $k must be code reference'
+      croak "Initializer for '$k' must be code reference"
         if defined (\$_[1]) && ref (\$_[1]) ne 'CODE';
       \$self->{$k} = \$_[1];
     }
@@ -515,7 +510,7 @@ sub _coderef ($$) {
     my $class \$self = \$_[0];
 
     if (\@_ == 2) {
-      croak 'Initializer for $k must be code reference'
+      croak "Initializer for '$k' must be code reference"
         if defined (\$_[1]) && ref (\$_[1]) ne 'CODE';
       \\(\$self->{$k} = \$_[1]);
     }
@@ -709,6 +704,8 @@ Class::Struct::FIELDS - Combine Class::Struct, base and fields
     $obj->c (My_Other_Class::->new);     # assign a new object
 
 =head1 DESCRIPTION
+
+(This page documents C<Class::Struct::FIELDS> v.0.9.)
 
 C<Class::Struct::FIELDS> exports a single function, C<struct>.  Given
 a list of element names and types, and optionally a class name and/or
@@ -1184,6 +1181,18 @@ however, if defining your own custom accessors.
 As long as the caveats for defining your own C<new> are followed, this
 warning is harmless; otherwise your objects may not be properly
 initialized.
+
+=item Initializer for '%s' must be %s reference
+
+(F) At runtime, the caller tried to assign the wrong type of argument
+to the element.  An example which triggers this message:
+
+    use Class::Struct::FIELDS Bob => { a => '@' };
+    my $b = Bob::->new;
+    $b->ary ({hash => 'reference'}); # croaks
+
+The last statement will croak with the message, "Initializer for 'ary'
+must be array reference".
 
 =back
 
