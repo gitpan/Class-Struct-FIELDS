@@ -1,5 +1,19 @@
 Revision history for Perl extension Class::Struct::FIELDS.
 
+1.1 Sat Oct 14 07:28:56 2000
+	- Auto-stringify.
+	- EXPERIMENTAL: tied hashes and hashes whose elements must be
+	  IS-A certain packages.  THIS IS AN UNDOCUMENTED FEATURE, AND
+	  MAY BE REMOVED IN THE NEXT RELEASE (or made documented and
+	  supported).
+	- Try using AutoLoader again.  It works now.  Why?
+	- Tied support recognizes overrides.
+	- Hidden (_*) versions for tied ARRAY and HASH when caller
+	  uses overrides for these (e.g., sub Some::Class::FETCH).
+        - Corrected CREDITS.
+	- Renamed _object_{hash,array} to _{hash,array}_object to make
+	  AutoSplit happy.
+
 1.0 Mon Sep 25 10:36:31 2000
 	- Allow caller to declare subs that override access methods
 	  before they are defined.  This helps with coding.

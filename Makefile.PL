@@ -17,5 +17,8 @@ sub MY::postamble {
 README: $(VERSION_FROM)
 	perldoc -t $< > $@
 
-all:: README';
+all:: README
+
+distclean::
+	$(RM) README';
 }

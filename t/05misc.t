@@ -1,6 +1,6 @@
 # Emacs, this is -*-perl-*- code.
 
-BEGIN { use Test; plan tests => 13 }
+BEGIN { use Test; plan tests => 18 }
 
 require 5.005_64;
 use strict;
@@ -97,5 +97,28 @@ ok (1 == push @ary, Kanga::->new);
 ok (ref $ary[1] eq 'Kanga'); # auto-create
 undef $::po;
 untie @ary;
+
+# Test 14:
+sub Rary::as_string { ref $_[0] || "$_[0]" };
+use Class::Struct::FIELDS qw(Rary);
+$::po = Rary::->new;
+ok ("$::po" eq 'Rary');
+
+# Tests 15-16:
+# EXPERIMENTAL  XXX
+use Class::Struct::FIELDS Oitiluke => { ary => '+%' };
+my %hash;
+ok ($::po = tie %hash, 'Oitiluke');
+ok (3 == ($hash{key} = 3));
+undef $::po;
+untie %hash;
+
+# Tests 17-18:
+# EXPERIMENTAL  XXX
+use Class::Struct::FIELDS Bigby => { ary => '+%Oitiluke' };
+ok ($::po = tie %hash, 'Bigby');
+ok (ref ($hash{key} = Oitiluke::->new) eq 'Oitiluke');
+undef $::po;
+untie %hash;
 
 1;

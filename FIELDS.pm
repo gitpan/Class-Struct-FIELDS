@@ -9,8 +9,7 @@ use Carp;
 # AutoLoader would be nice, but it mucks up with evaling the package
 # definitions in 'struct'.  Hmmm.
 
-# use AutoLoader qw(AUTOLOAD);
-
+use AutoLoader qw(AUTOLOAD);
 use base qw(Exporter);
 
 # Items to export into callers namespace by default. Note: do not
@@ -26,14 +25,15 @@ our %EXPORT_TAGS = (all => [qw(struct)]);
 our @EXPORT_OK = (@{$EXPORT_TAGS{all}});
 our @EXPORT = qw(struct);
 
-# I'd like to say "our $VERSION = v1.0;", but MakeMaker--even in perl
+# I'd like to say "our $VERSION = v1.1;", but MakeMaker--even in perl
 # 5.6.0--, doesn't grok that and has trouble creating a Makefile.
-our $VERSION = '1.0';
-my $rcs = qq$Id: FIELDS.pm,v 1.9 2000/10/04 12:32:04 binkley Exp $;
+our $VERSION = '1.1';
+my $rcs = qq$Id: FIELDS.pm,v 1.1.1.1 2001/04/08 23:28:31 binkley Exp $;
 
-my %SEEN_PKGS = ();
+# my %SEEN_PKGS = ();
 
 sub struct;
+
 sub _array ($$;$);
 sub _arraytie ($$);
 sub _arrayref ($$;$);
@@ -42,12 +42,13 @@ sub _coderef ($$;$);
 sub _baseclass_warning ($$);
 sub _get_isa ($$);
 sub _hash ($$;$);
+sub _hashtie ($$);
 sub _hashref ($$;$);
 sub _mini_prolog ($$);
 sub _new_new_warning ($);
 sub _object ($$$$;$);
-sub _object_array ($$$$;$);
-sub _object_hash ($$$$;$);
+sub _array_object ($$$$;$);
+sub _hash_object ($$$$;$);
 sub _objectref ($$$$;$);
 sub _override_warning ($$);
 sub _postlog ( );
@@ -56,7 +57,10 @@ sub _regexp ($$;$);
 sub _regexpref ($$;$);
 sub _scalar ($$;$);
 sub _scalarref ($$;$);
+sub _stringify ( );
 sub _usage_error;
+
+# Preloaded methods go here.
 
 sub import {
   my ($class) = shift;
@@ -150,6 +154,10 @@ sub struct {
   eval _mini_prolog ($class, $isa); # baseclass warnings
   my $eval = _prolog ($class, $isa, $decls);
 
+  # Automagic overload support.
+  $eval .= _stringify
+    if (do { no strict qw(refs); exists &{"$class\::as_string"} });
+
   while (my ($k, $v) = each %$decls) {
     my $hidden = undef;
 
@@ -202,6 +210,12 @@ sub struct {
       $eval .= _hash ($class, $k, $hidden);
     }
 
+    # EXPERIMENTAL  XXX
+    elsif ($v eq '+%') {
+      $eval .= _hashtie ($class, $k);
+      $eval .= _hash ($class, $k, $hidden);
+    }
+
     elsif ($v eq '\%' or $v eq '*%') {
       $eval .= _hashref ($class, $k, $hidden);
     }
@@ -224,30 +238,37 @@ sub struct {
 
     # EXPERIMENTAL  XXX
     elsif ($v =~ s/^\+@(\w+(?:::\w+)*)$/$1/o) {
-      $SEEN_PKGS{$class}->{$k} = $v;
+#       $SEEN_PKGS{$class}->{$k} = $v;
       $eval .= _arraytie ($class, $k);
-      $eval .= _object_array ($class, $caller, $k, $v, $hidden);
+      $eval .= _array_object ($class, $caller, $k, $v, $hidden);
     }
 
     # EXPERIMENTAL  XXX
     elsif ($v =~ s/^@(\w+(?:::\w+)*)$/$1/o) {
-      $SEEN_PKGS{$class}->{$k} = $v;
-      $eval .= _object_array ($class, $caller, $k, $v, $hidden);
+#       $SEEN_PKGS{$class}->{$k} = $v;
+      $eval .= _array_object ($class, $caller, $k, $v, $hidden);
+    }
+
+    # EXPERIMENTAL  XXX
+    elsif ($v =~ s/^\+%(\w+(?:::\w+)*)$/$1/o) {
+#       $SEEN_PKGS{$class}->{$k} = $v;
+      $eval .= _hashtie ($class, $k);
+      $eval .= _hash_object ($class, $caller, $k, $v, $hidden);
     }
 
     # EXPERIMENTAL  XXX
     elsif ($v =~ s/^%(\w+(?:::\w+)*)$/$1/o) {
-      $SEEN_PKGS{$class}->{$k} = $v;
-      $eval .= _object_hash ($class, $caller, $k, $v, $hidden);
+#       $SEEN_PKGS{$class}->{$k} = $v;
+      $eval .= _hash_object ($class, $caller, $k, $v, $hidden);
     }
 
     elsif ($v =~ s/^[\\*](\w+(?:::\w+)*)$/$1/o) {
-      $SEEN_PKGS{$class}->{$k} = $v;
+#       $SEEN_PKGS{$class}->{$k} = $v;
       $eval .= _objectref ($class, $caller, $k, $v, $hidden);
     }
 
     elsif ($v =~ /^\w+(?:::\w+)*$/o) {
-      $SEEN_PKGS{$class}->{$k} = $v;
+#       $SEEN_PKGS{$class}->{$k} = $v;
       $eval .= _object ($class, $caller, $k, $v, $hidden);
     }
 
@@ -406,6 +427,22 @@ sub _postlog ( ) {
 EOC
 }
 
+1;
+
+# Autoload methods go after __END__, and are processed by the
+# autosplit program.
+
+__END__
+
+sub _stringify ( ) {
+  <<EOC;
+
+  use overload
+    '""' => sub { \$_[0]->as_string },
+    bool => sub { 1 };
+EOC
+}
+
 sub _usage_error {
   croak <<EOE;
 'struct' usage error
@@ -505,35 +542,88 @@ sub _arraytie ($$) {
     (shift)->new (\@_);
   }
 
-  sub FETCH
-  {
-    my $class \$self = \$_[0];
-    \$self->$k \(\$_[1]);
+  if (do { no strict qw(refs); exists &{$class\::FETCH} }) {
+    *{$class\::_FETCH} = sub {
+      my $class \$self = \$_[0];
+      \$self->$k \(\$_[1]);
+    };
   }
 
-  sub FETCHSIZE {
-    my $class \$self = \$_[0];
-    scalar \@{\$self->$k};
+  else {
+    *{$class\::FETCH} = sub {
+      my $class \$self = \$_[0];
+      \$self->$k \(\$_[1]);
+    };
   }
 
-  sub STORE {
-    my $class \$self = \$_[0];
-    \$self->$k \(\$_[1], \$_[2]);
+  if (do { no strict qw(refs); exists &{$class\::FETCHSIZE} }) {
+    *{$class\::_FETCHSIZE} = sub {
+      my $class \$self = \$_[0];
+      scalar \@{\$self->$k};
+    };
   }
 
-  sub STORESIZE {
-    my $class \$self = \$_[0];
-    \$#{\$self->$k} = \$_[1] - 1;
+  else {
+    *{$class\::FETCHSIZE} = sub {
+      my $class \$self = \$_[0];
+      scalar \@{\$self->$k};
+    };
   }
 
-  sub EXISTS {
-    my $class \$self = \$_[0];
-    exists \$self->$k\->[\$_[1]];
+  if (do { no strict qw(refs); exists &{$class\::STORE} }) {
+    *{$class\::_STORE} = sub {
+      my $class \$self = \$_[0];
+      \$self->$k \(\$_[1], \$_[2]);
+    };
   }
 
-  sub DELETE {
-    my $class \$self = \$_[0];
-    delete \$self->$k\->[\$_[1]];
+  else {
+    *{$class\::STORE} = sub {
+      my $class \$self = \$_[0];
+      \$self->$k \(\$_[1], \$_[2]);
+    };
+  }
+
+  if (do { no strict qw(refs); exists &{$class\::STORESIZE} }) {
+    *{$class\::_STORESIZE} = sub {
+      my $class \$self = \$_[0];
+      \$#{\$self->$k} = \$_[1] - 1;
+    };
+  }
+
+  else {
+    *{$class\::STORESIZE} = sub {
+      my $class \$self = \$_[0];
+      \$#{\$self->$k} = \$_[1] - 1;
+    };
+  }
+
+  if (do { no strict qw(refs); exists &{$class\::EXISTS} }) {
+    *{$class\::_EXISTS} = sub {
+      my $class \$self = \$_[0];
+      exists \$self->$k\->[\$_[1]];
+    };
+  }
+
+  else {
+    *{$class\::EXISTS} = sub {
+      my $class \$self = \$_[0];
+      exists \$self->$k\->[\$_[1]];
+    };
+  }
+
+  if (do { no strict qw(refs); exists &{$class\::DELETE} }) {
+    *{$class\::_DELETE} = sub {
+      my $class \$self = \$_[0];
+      delete \$self->$k\->[\$_[1]];
+    };
+  }
+
+  else {
+    *{$class\::DELETE} = sub {
+      my $class \$self = \$_[0];
+      delete \$self->$k\->[\$_[1]];
+    };
   }
 EOC
 }
@@ -598,6 +688,122 @@ sub _hash ($$;$) {
     else {
       \$self->{$k} ||= {};
     }
+  }
+EOC
+}
+
+sub _hashtie ($$) {
+  my ($class, $k) = @_;
+
+  <<EOC;
+
+  use base qw(Tie::Hash);
+
+  sub TIEHASH
+  {
+    (shift)->new (\@_);
+  }
+
+  if (do { no strict qw(refs); exists &{$class\::FETCH} }) {
+    *{$class\::_FETCH} = sub {
+      my $class \$self = \$_[0];
+      \$self->$k \(\$_[1]);
+    };
+  }
+
+  else {
+    *{$class\::FETCH} = sub {
+      my $class \$self = \$_[0];
+      \$self->$k \(\$_[1]);
+    };
+  }
+
+  if (do { no strict qw(refs); exists &{$class\::STORE} }) {
+    *{$class\::_STORE} = sub {
+      my $class \$self = \$_[0];
+      \$self->$k \(\$_[1], \$_[2]);
+    };
+  }
+
+  else {
+    *{$class\::STORE} = sub {
+      my $class \$self = \$_[0];
+      \$self->$k \(\$_[1], \$_[2]);
+    };
+  }
+
+  if (do { no strict qw(refs); exists &{$class\::FIRSTKEY} }) {
+    *{$class\::_FIRSTKEY} = sub {
+      my $class \$self = \$_[0];
+      # Why does Tie::StdHash ensure the keys are auto-vivified?
+      my \$a = scalar keys %{\$self->$k};
+      each %{\$self->$k};
+    };
+  }
+
+  else {
+    *{$class\::FIRSTKEY} = sub {
+      my $class \$self = \$_[0];
+      # Why does Tie::StdHash ensure the keys are auto-vivified?
+      my \$a = scalar keys %{\$self->$k};
+      each %{\$self->$k};
+    };
+  }
+
+  if (do { no strict qw(refs); exists &{$class\::NEXTKEY} }) {
+    *{$class\::_NEXTKEY} = sub {
+      my $class \$self = \$_[0];
+      each %{\$self->$k};
+    };
+  }
+
+  else {
+    *{$class\::NEXTKEY} = sub {
+      my $class \$self = \$_[0];
+      each %{\$self->$k};
+    };
+  }
+
+  if (do { no strict qw(refs); exists &{$class\::EXISTS} }) {
+    *{$class\::_EXISTS} = sub {
+      my $class \$self = \$_[0];
+      exists \$self->$k\->[\$_[1]];
+    };
+  }
+
+  else {
+    *{$class\::EXISTS} = sub {
+      my $class \$self = \$_[0];
+      exists \$self->$k\->[\$_[1]];
+    };
+  }
+
+  if (do { no strict qw(refs); exists &{$class\::DELETE} }) {
+    *{$class\::_DELETE} = sub {
+      my $class \$self = \$_[0];
+      delete \$self->$k\->{\$_[1]};
+    };
+  }
+
+  else {
+    *{$class\::DELETE} = sub {
+      my $class \$self = \$_[0];
+      delete \$self->$k\->{\$_[1]};
+    };
+  }
+
+  if (do { no strict qw(refs); exists &{$class\::CLEAR} }) {
+    *{$class\::_CLEAR} = sub {
+      my $class \$self = \$_[0];
+      \$self->$k ({});
+    };
+  }
+
+  else {
+    *{$class\::CLEAR} = sub {
+      my $class \$self = \$_[0];
+      \$self->$k ({});
+    };
   }
 EOC
 }
@@ -757,7 +963,7 @@ sub _object ($$$$;$) {
 EOC
 }
 
-sub _object_array ($$$$;$) {
+sub _array_object ($$$$;$) {
   my ($class, $caller, $k, $v, $hidden) = @_;
   my $sub = $hidden ? "__$k" : $k;
 
@@ -804,7 +1010,7 @@ sub _object_array ($$$$;$) {
 EOC
 }
 
-sub _object_hash ($$$$;$) {
+sub _hash_object ($$$$;$) {
   my ($class, $caller, $k, $v, $hidden) = @_;
   my $sub = $hidden ? "__$k" : $k;
 
@@ -886,17 +1092,13 @@ sub _objectref ($$$$;$) {
 EOC
 }
 
-1;
-
-__END__
-
 =head1 NAME
 
 Class::Struct::FIELDS - Combine Class::Struct, base and fields
 
 =head1 SYNOPSIS
 
-(This page documents C<Class::Struct::FIELDS> v.1.0.)
+(This page documents C<Class::Struct::FIELDS> v.1.1.)
 
     use Class::Struct::FIELDS;
             # declare struct, based on fields, explicit class name:
@@ -1344,6 +1546,13 @@ way for hash members:
 
 See L<fields> for more details.
 
+=head2 Extra magic: auto-stringify
+
+If there exists a subroutine named C<as_string> at the time you invoke
+C<struct> (or, equivalently, during the call to C<use>), then
+C<Class::Struct::FIELDS> will glue that into auto-stringification with
+C<overload> for you.
+
 =head1 EXAMPLES
 
 =over
@@ -1534,10 +1743,28 @@ must be Mary object".
 
 Please see the F<TODO> list.
 
+B<GIANT MAN-EATING HOLE>: due to bugs in lvalue subs in 5.6.0 (try
+running some under the debugger), I had to disable the obvious
+syntax:
+
+    use Class::Struct::FIELDS Bob => { s => '$' };
+    my Bob $b = Bob::->new;
+    $b->s = 3;
+
+and provide the clumsier:
+
+    use Class::Struct::FIELDS Bob => { s => '$' };
+    my Bob $b = Bob::->new;
+    $b->s (3);
+
+Some of these constructs work fine as long as you don't try to debug
+the generated code.
+
 =head1 CREDITS
 
-This documentation is amazingly like that of C<Class::Struct>.  I
-wonder why.  Credit to Dr. Damian Conway E<lt>damian@conway.orgE<gt>.
+Dean Roehrich, Jim Miner <jfm@winternet.com> and Dr. Damian Conway
+E<lt>damian@conway.orgE<gt> wrote the original C<Class::Struct> which
+inspired this module and provided much of its documentation.
 
 =head1 AUTHOR
 
@@ -1564,13 +1791,18 @@ data structures.
 
 =item L<base>
 
-C<base> is a standard module for establishing IS-A relationships with
+C<base> is a standard pragma for establishing IS-A relationships with
 base classes at compile time.
 
 =item L<fields>
 
-C<fields> is a standard module for imbuing your class with efficient
+C<fields> is a standard pragma for imbuing your class with efficient
 pseudo-hashes for data members.
+
+=item L<overload>
+
+C<overload> is a standard pragma for overloading Perl syntax with your
+own subroutines.
 
 =back
 
