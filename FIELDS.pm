@@ -26,7 +26,9 @@ our %EXPORT_TAGS = (all => [qw(struct)]);
 our @EXPORT_OK = (@{$EXPORT_TAGS{all}});
 our @EXPORT = qw(struct);
 
-our $VERSION = '0.7'; # v0.7;
+# I'd like to say "our $VERSION = v0.8;", but MakeMaker--even in perl
+# 5.6.0--, doesn't grok that and has trouble creating a Makefile.
+our $VERSION = '0.8';
 
 sub _array ($$);
 sub _arrayref ($$);
@@ -47,30 +49,36 @@ sub _scalar ($$);
 sub _scalarref ($$);
 sub _usage_error;
 
+sub import {
+  my ($class) = shift;
 
-sub struct (@) {
+  struct (@_) if @_;
+  $class->export_to_level (1); # we consume @_
+}
+
+sub struct {
   my ($class, $isa, $decls);
   my $caller = (caller ( ))[0];
 
   if (my $ref = ref $_[0]) { # guess class from caller
     if ($ref eq 'ARRAY') {
       if ($ref = ref $_[1]) {
-        if ($ref eq 'HASH') {
-          ($class, $isa, $decls) = ($caller, shift, shift);
-          _usage_error if @_;
-        }
+	if ($ref eq 'HASH') { # called as "struct [], {}"
+	  ($class, $isa, $decls) = ($caller, shift, shift);
+	  _usage_error if @_;
+	}
 
-        else {
-          _usage_error;
-        }
+	else {
+	  _usage_error;
+	}
       }
 
-      else {
-        ($class, $isa, $decls) = ($caller, shift, {@_});
+      else { # called as "struct [], ..."
+	($class, $isa, $decls) = ($caller, shift, {@_});
       }
     }
 
-    elsif ($ref eq 'HASH') {
+    elsif ($ref eq 'HASH') { # called as "struct ..."
       ($class, $isa, $decls) = ($caller, [], shift);
       _usage_error if @_;
     }
@@ -83,34 +91,40 @@ sub struct (@) {
   else { # caller listed, e.g., Some_Class => ...
     if ($ref = ref $_[1]) {
       if ($ref eq 'ARRAY') {
-        if ($ref = ref $_[2]) {
-          if ($ref eq 'HASH') {
-            ($class, $isa, $decls) = (shift, shift, shift);
-            _usage_error if @_;
-          }
+	if ($ref = ref $_[2]) {
+	  if ($ref eq 'HASH') { # called as "struct Class => [], {}"
+	    ($class, $isa, $decls) = (shift, shift, shift);
+	    _usage_error if @_;
+	  }
 
-          else {
-            _usage_error;
-          }
-        }
+	  else {
+	    _usage_error;
+	  }
+	}
 
-        else {
-          ($class, $isa, $decls) = (shift, shift, {@_});
-        }
+	else { # called as "struct Class => [], ..."
+	  ($class, $isa, $decls) = (shift, shift, {@_});
+	}
       }
 
-      elsif ($ref eq 'HASH') {
-        ($class, $isa, $decls) = (shift, [], shift);
-        _usage_error if @_;
+      elsif ($ref eq 'HASH') { # called as "struct {}"
+	($class, $isa, $decls) = (shift, [], shift);
+	_usage_error if @_;
       }
 
       else {
-        _usage_error;
+	_usage_error;
       }
     }
 
     else {
-      ($class, $isa, $decls) = (shift, [], {@_});
+      if (@_) { # called as "struct 'Class'"; ambiguous!
+	($class, $isa, $decls) = (shift, [], {@_});
+      }
+
+      else { # called as plain "&struct"
+	($class, $isa, $decls) = ($caller, [], {@_});
+      }
     }
   }
 
@@ -204,13 +218,7 @@ sub _prolog ($$$) {
   {
     no strict qw(refs);
 
-    # Exporter before anything else; base classes last.  This ensures
-    # that EXPORTS work right, and that the user can control the order
-    # of base classes by fiddling with @ISA before/after calling
-    # struct.
-
-    #@isa = (qw(Exporter), @{"$class\::ISA"}, @$isa);
-    @isa = (@{"$class\::ISA"}, @$isa);
+    @isa = (@{"$class\::ISA"}, @$isa); # preserve the existing @ISA
   }
 
   @fields = keys %$decls;
@@ -635,7 +643,7 @@ __END__
 
 =head1 NAME
 
-Class::Struct::FIELDS - Combine Class::Struct and fields
+Class::Struct::FIELDS - Combine Class::Struct, base and fields
 
 =head1 SYNOPSIS
 
@@ -647,7 +655,7 @@ Class::Struct::FIELDS - Combine Class::Struct and fields
             # declare struct, based on fields, explicit class name
             # with inheritance:
     struct (CLASS_NAME => [qw(BASE_CLASSES ...)],
-            { ELEMENT_NAME => ELEMENT_TYPE, ... });
+	    { ELEMENT_NAME => ELEMENT_TYPE, ... });
 
     package CLASS_NAME;
     use Class::Struct::FIELDS;
@@ -731,19 +739,66 @@ Also, C<Class::Struct::FIELDS> supports code and regular expression
 elements.  (C<Class::Struct> handles code and regular expressions as
 scalars.)
 
+Lastly, C<Class::Struct::FIELDS> passes it's import list, if any, from
+the call to C<use Class::Struct::FIELDS ...> to C<struct> so that you
+may create new packages at compile-time.
+
 Unlike C<fields>, each element has a data type, and is automatically
 created at first access.
 
-=head2 The C<struct()> function
+=head2 Calling C<use Class::Struct::FIELDS>
 
-The C<struct> function has two forms of parameter-list:
+You may call C<use Class::Struct::FIELDS> just as with any module
+library:
+
+    use Class::Struct::FIELDS;
+    struct Bob => [];
+
+However, if you try C<my Dog $spot> syntax with this example:
+
+    use Class::Struct::FIELDS;
+    struct Bob => [];
+    my Bob $bob = Bob::->new;
+
+you will get a compile-time error:
+
+    No such class Bob at <filename> line <number>, near "my Bob"
+    Bareword "Bob::" refers to nonexistent package at <filename> line
+    <number>.
+
+since the compiler has not seen your class declarations yet until
+after the call to C<struct>, by which time it has already seen your
+C<my> declarations.  Oops, too late.  Instead, create the package for
+C<Bob> during compilation:
+
+    use Class::Struct::FIELDS qw(Bob);
+    my Bob $bob = Bob::->new;
+
+This compiles without error as C<import> for C<Class::Struct::FIELDS>
+calls C<struct> for you if you have any arguments in the C<use>
+statement.  A more interesting example is:
+
+    use Class::Struct::FIELDS Bob => { a => '$' };
+    use Class::Struct::FIELDS Fred => [qw(Bob)];
+    my Bob $bob = Bob::->new;
+    my Fred $fred = Fred::->new;
+
+=head2 The C<struct> subroutine
+
+The C<struct> subroutine has two correct forms of parameter-list:
 
     struct (CLASS_NAME => { ELEMENT_LIST });
     struct (ELEMENT_LIST);
 
 The first form explicitly identifies the name of the class being
 created.  The second form assumes the current package name as the
-class name.
+class name.  There is a third form of parameter-list:
+
+    struct (CLASS_NAME, ELEMENT_LIST);
+
+but it is ambiguous and could be resolved as the second form above
+with an illegal, odd element at the end.  The code presently supports
+this call, but it may be unsupported in the future.
 
 Optionally, you may specify base classes with an array reference as
 the first non-class-name argument:
@@ -866,25 +921,30 @@ returned.
 The class is automatically required for you so that, for example, you
 can safely write:
 
-  struct MyObj {io => 'IO::Scalar'};
+    struct MyObj {io => 'IO::Scalar'};
 
 and access C<io> immediately.  The same applies for nested structs:
 
-  BEGIN {
-    struct Alice { when => '$' };
-    struct Bob { who => 'Alice' };
-  }
+    BEGIN {
+      struct Alice { when => '$' };
+      struct Bob { who => 'Alice' };
+    }
 
-  my Bob $b = Bob::->new;
-  $b->who->when ('what');
+    my Bob $b = Bob::->new;
+    $b->who->when ('what');
 
 Note, however, the C<BEGIN> block so that this example can use the
-"C<my Dog $spot>" syntax for C<my Bob $b>.  Also, no actual import
+C<my Dog $spot> syntax for C<my Bob $b>.  Also, no actual import
 happens for the caller -- the automatic use is only for convenience in
 auto-constructing members, not magic.  Another way to do this is:
 
-  { package Bob; use Class::Struct::FIELDS; struct }
-  my Bob $b = Bob::->new;
+    { package Bob; use Class::Struct::FIELDS; struct }
+    my Bob $b = Bob::->new;
+
+And of course the best way to do this is simply:
+
+    use Class::Struct::FIELDS qw(Bob);
+    my Bob $b = Bob::->new;
 
 =item What about globs (C<*>) and other funny types?
 

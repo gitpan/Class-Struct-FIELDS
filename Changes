@@ -1,5 +1,12 @@
 Revision history for Perl extension Class::Struct::FIELDS.
 
+0.8 Thu Sep 21 08:58:13 2000
+	- Fixed argument checking bug in 'struct'.  Updated
+	  documentation to reflect the change.
+	- test.pl now checks all legal calls to 'struct' and creates
+	  an example object of each.
+	- Call 'struct' during import if there are arguments.
+
 0.7 Wed Sep 20 20:47:00 2000
 	- uploading to PAUSE.  Ready for debugging.
 
@@ -9,4 +16,3 @@ Revision history for Perl extension Class::Struct::FIELDS.
 0.1  Wed Sep 13 10:50:55 2000
 	- original version; created by h2xs 1.20 with options
 		-v 0.1 -n Class::Struct::FIELDS -X
-
